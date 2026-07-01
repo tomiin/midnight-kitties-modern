@@ -1,0 +1,240 @@
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+
+// =============================================================================
+// Midnight Kitties (modernized)
+// -----------------------------------------------------------------------------
+// A CryptoKitties-style NFT for Midnight, rebuilt on the current Compact
+// language version. Each kitty is a unique, ownable token with on-chain DNA, a
+// gender, and a generation. Kitties can be minted, transferred, listed for sale,
+// bought, and bred to produce a new generation.
+//
+// This is a self-contained rewrite of Ricardo Rius' original midnight-kitties
+// (github.com/riusricardo/midnight-kitties). The original targeted the retired
+// testnet-02 and depended on an external NFT library written for an old
+// compiler, so it no longer builds or deploys. Here the NFT primitives
+// (ownerOf / balanceOf / mint / transfer) are implemented directly in the
+// contract, so there are no external, version-pinned dependencies to rot.
+//
+// Ownership is PSEUDONYMOUS. A caller proves control of a secret key (a private
+// witness); only a one-way hash of that key - an "account id" - is ever written
+// on-chain. The kitties, counts, and sale listings are public; who owns a kitty
+// is only ever a hash. That is selective disclosure, the core Midnight idea.
+// =============================================================================
+
+// ---- The kitty record -------------------------------------------------------
+
+export struct Kitty {
+  dna: Bytes<32>,          // unique genome, derived by hashing
+  isMale: Boolean,         // gender (alternates as kitties are born)
+  generation: Uint<32>,    // 0 for minted originals, parent-max + 1 for bred
+  owner: Bytes<32>,        // owner account-id (a hash of a secret key)
+  price: Uint<64>,         // sale price (0 when not for sale)
+  forSale: Boolean         // is it currently listed?
+}
+
+// ---- Public ledger state ----------------------------------------------------
+
+export ledger kitties: Map<Uint<64>, Kitty>;      // kittyId -> the kitty record
+export ledger balances: Map<Bytes<32>, Uint<64>>; // owner account-id -> how many
+export ledger totalKitties: Uint<64>;             // how many have ever been born
+export ledger genderSelector: Boolean;            // flips each birth to alternate gender
+
+// ---- Private witnesses ------------------------------------------------------
+
+witness localSecretKey(): Bytes<32>;  // the caller's identity key (never disclosed)
+witness randomSeed(): Bytes<32>;      // fresh entropy for DNA (untrusted external input)
+
+// ---- Identity helpers -------------------------------------------------------
+
+export pure circuit accountId(sk: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<1, Bytes<32>>>([sk]);
+}
+
+circuit callerId(): Bytes<32> {
+  return accountId(localSecretKey());
+}
+
+// ---- DNA helpers ------------------------------------------------------------
+
+// A minted kitty's DNA: hash of the minter's id and a fresh random seed.
+pure circuit makeDNA(ownerId: Bytes<32>, seed: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([ownerId, seed]);
+}
+
+// A bred kitty's DNA: hash of both parents' DNA plus a fresh random seed.
+pure circuit breedDNA(dna1: Bytes<32>, dna2: Bytes<32>, seed: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<3, Bytes<32>>>([dna1, dna2, seed]);
+}
+
+pure circuit maxOf(a: Uint<32>, b: Uint<32>): Uint<32> {
+  if (a > b) {
+    return a;
+  } else {
+    return b;
+  }
+}
+
+// Current balance for an account key (0 if it holds none). The caller passes the
+// key already disclosed when it comes from a witness, plain when it is public.
+circuit balanceRaw(key: Bytes<32>): Uint<64> {
+  if (balances.member(key)) {
+    return balances.lookup(key);
+  } else {
+    return 0;
+  }
+}
+
+// ---- Constructor ------------------------------------------------------------
+
+constructor() {
+  totalKitties = 0;
+  genderSelector = false;
+}
+
+// ---- Mint -------------------------------------------------------------------
+
+// Mint a brand-new generation-0 kitty to the caller.
+export circuit mintKitty(): [] {
+  const me = callerId();
+  const newId = (totalKitties + 1) as Uint<64>;
+  assert(!kitties.member(newId), "Kitties: id already exists");
+
+  const kitty = Kitty {
+    dna: makeDNA(me, randomSeed()),
+    isMale: genderSelector,
+    generation: 0,
+    owner: me,
+    price: 0,
+    forSale: false
+  };
+
+  kitties.insert(newId, disclose(kitty));
+  balances.insert(disclose(me), (balanceRaw(disclose(me)) + 1) as Uint<64>);
+
+  totalKitties = newId;
+  genderSelector = !genderSelector;
+}
+
+// ---- Transfer ---------------------------------------------------------------
+
+// Give a kitty you own to another account. Clears any sale listing.
+export circuit transferKitty(to: Bytes<32>, kittyId: Uint<64>): [] {
+  assert(kitties.member(disclose(kittyId)), "Kitties: no such kitty");
+  const me = callerId();
+  const k = kitties.lookup(disclose(kittyId));
+  assert(k.owner == me, "Kitties: not your kitty");
+
+  balances.insert(disclose(me), (balanceRaw(disclose(me)) - 1) as Uint<64>);
+  balances.insert(disclose(to), (balanceRaw(disclose(to)) + 1) as Uint<64>);
+
+  const moved = Kitty {
+    dna: k.dna,
+    isMale: k.isMale,
+    generation: k.generation,
+    owner: to,
+    price: 0,
+    forSale: false
+  };
+  kitties.insert(disclose(kittyId), disclose(moved));
+}
+
+// ---- Marketplace ------------------------------------------------------------
+
+// List a kitty you own for sale (price > 0), or delist it (price 0).
+export circuit setPrice(kittyId: Uint<64>, price: Uint<64>): [] {
+  assert(kitties.member(disclose(kittyId)), "Kitties: no such kitty");
+  const k = kitties.lookup(disclose(kittyId));
+  assert(k.owner == callerId(), "Kitties: not your kitty");
+
+  const listed = Kitty {
+    dna: k.dna,
+    isMale: k.isMale,
+    generation: k.generation,
+    owner: k.owner,
+    price: price,
+    forSale: price > 0
+  };
+  kitties.insert(disclose(kittyId), disclose(listed));
+}
+
+// Buy a kitty that is listed for sale. Ownership moves to the buyer and the
+// listing is cleared. (This demo moves the token only; no on-chain currency
+// changes hands - a real market would settle payment here.)
+export circuit buyKitty(kittyId: Uint<64>): [] {
+  assert(kitties.member(disclose(kittyId)), "Kitties: no such kitty");
+  const k = kitties.lookup(disclose(kittyId));
+  assert(k.forSale, "Kitties: not for sale");
+
+  const me = callerId();
+  const seller = k.owner;
+  assert(seller != me, "Kitties: you already own this kitty");
+
+  balances.insert(seller, (balanceRaw(seller) - 1) as Uint<64>);
+  balances.insert(disclose(me), (balanceRaw(disclose(me)) + 1) as Uint<64>);
+
+  const bought = Kitty {
+    dna: k.dna,
+    isMale: k.isMale,
+    generation: k.generation,
+    owner: me,
+    price: 0,
+    forSale: false
+  };
+  kitties.insert(disclose(kittyId), disclose(bought));
+}
+
+// ---- Breeding ---------------------------------------------------------------
+
+// Breed two existing kitties into a new one. You must own at least one parent.
+// The child's generation is max(parents) + 1.
+export circuit breed(kittyId1: Uint<64>, kittyId2: Uint<64>): [] {
+  assert(kitties.member(disclose(kittyId1)), "Kitties: parent 1 does not exist");
+  assert(kitties.member(disclose(kittyId2)), "Kitties: parent 2 does not exist");
+  assert(kittyId1 != kittyId2, "Kitties: a kitty cannot breed with itself");
+
+  const me = callerId();
+  const p1 = kitties.lookup(disclose(kittyId1));
+  const p2 = kitties.lookup(disclose(kittyId2));
+  assert(p1.owner == me || p2.owner == me, "Kitties: you must own one of the parents");
+
+  const newId = (totalKitties + 1) as Uint<64>;
+  assert(!kitties.member(newId), "Kitties: id already exists");
+
+  const child = Kitty {
+    dna: breedDNA(p1.dna, p2.dna, randomSeed()),
+    isMale: genderSelector,
+    generation: (maxOf(p1.generation, p2.generation) + 1) as Uint<32>,
+    owner: me,
+    price: 0,
+    forSale: false
+  };
+
+  kitties.insert(newId, disclose(child));
+  balances.insert(disclose(me), (balanceRaw(disclose(me)) + 1) as Uint<64>);
+
+  totalKitties = newId;
+  genderSelector = !genderSelector;
+}
+
+// ---- Read circuits ----------------------------------------------------------
+
+export circuit ownerOf(kittyId: Uint<64>): Bytes<32> {
+  assert(kitties.member(disclose(kittyId)), "Kitties: no such kitty");
+  const k = kitties.lookup(disclose(kittyId));
+  return k.owner;
+}
+
+export circuit balanceOf(account: Bytes<32>): Uint<64> {
+  return balanceRaw(disclose(account));
+}
+
+export circuit getKitty(kittyId: Uint<64>): Kitty {
+  assert(kitties.member(disclose(kittyId)), "Kitties: no such kitty");
+  return kitties.lookup(disclose(kittyId));
+}
+
+export circuit getAllKittiesCount(): Uint<64> {
+  return totalKitties;
+}
