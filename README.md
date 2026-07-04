@@ -100,6 +100,21 @@ generation-1 offspring, so the on-chain `totalKitties` counter reads 3. The
 explorer shows the contract as DEPLOYED, with the deploy transaction, block, and
 live ledger state.
 
+### Why Preview and not Preprod?
+
+I actually aimed for Preprod first, because its public explorer indexes contracts
+cleanly. The problem: Preprod's wallet sync is currently broken. On every run the
+sync balloons memory until Node runs out of heap and crashes (or just stalls),
+so the wallet never even sees its funds — you can't get far enough to deploy. I
+tried bigger and bigger heaps (up to 16 GB) and manual funding from another
+wallet; it still wouldn't converge.
+
+Preview is the opposite. The wallet syncs and deploys cleanly, and its explorer
+turned out to render the contract too (see the link above). So Preview is where
+this lives, and it is fully public and verifiable there. If Preprod's sync gets
+fixed, the exact same contract deploys there unchanged — only the launcher
+network differs, nothing in the contract or code.
+
 ## Credit
 
 Original concept: `midnight-kitties` by Ricardo Rius (GPL-3.0) —
