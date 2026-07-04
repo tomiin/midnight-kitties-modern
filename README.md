@@ -87,7 +87,18 @@ CLI pointed at **Preview** with a local proof server), fund a fresh wallet from
 the Preview faucet, register for DUST, and call `mintKitty` / `breed` / etc.
 through the deployed contract's `callTx`.
 
-Deployed contract address: _to be filled in after the Preview deploy._
+### Deployed on Preview testnet
+
+This contract is live on the public Midnight **Preview** testnet:
+
+- Contract address: `c482622f4e0be2b9fd43b43b817e8d5fbcca4bde7be3245b787cd3373cd2e652`
+- Explorer: https://preview.midnightexplorer.com/contracts/0xc482622f4e0be2b9fd43b43b817e8d5fbcca4bde7be3245b787cd3373cd2e652
+- Deployment tx: `0x26c12cdbf4f5fa0e938ad551e60ca81a6ba41a28745df3dc77ad7c2aa77103c6` (block #1,454,846, 2026-07-04)
+
+It's not just deployed, it's been used: I minted two kitties and bred them into a
+generation-1 offspring, so the on-chain `totalKitties` counter reads 3. The
+explorer shows the contract as DEPLOYED, with the deploy transaction, block, and
+live ledger state.
 
 ## Credit
 
